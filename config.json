@@ -2,6 +2,7 @@
     "TOKEN": "",
     "ID": "",
     "HASH": "",
+    "CHANNEL_ID": "",
     "Laravel_Session": "",
     "XSRF_TOKEN": "",
     "GDTot_Crypt": "",
