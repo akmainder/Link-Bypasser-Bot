@@ -5,57 +5,95 @@ from pyrogram.types import (
     BotCommand,
     Message,
 )
+from pyrogram.enums import ChatMemberStatus
+from pyrogram.errors import UserNotParticipant, RPCError, FloodWait
+from asyncio import sleep
 from os import environ, remove
 from threading import Thread
 from json import load
 from re import search
-
-from texts import HELP_TEXT
-import bypasser
-import freewall
 from time import time
 from db import DB
+import bypasser
+import freewall
 
-
-# bot
+# Load config data
 with open("config.json", "r") as f:
     DATA: dict = load(f)
-
 
 def getenv(var):
     return environ.get(var) or DATA.get(var, None)
 
-
+# Bot setup
 bot_token = getenv("TOKEN")
 api_hash = getenv("HASH")
 api_id = getenv("ID")
-app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
-with app:
-    app.set_bot_commands(
-        [
-            BotCommand("start", "Welcome Message"),
-            BotCommand("help", "List of All Supported Sites"),
-        ]
-    )
+channel_id = int(getenv("CHANNEL_ID"))  # Ensure CHANNEL_ID is an integer
 
-# DB
+app = Client("my_bot", api_id=api_id, api_hash=api_hash, bot_token=bot_token)
+
+# DB setup
 db_api = getenv("DB_API")
 db_owner = getenv("DB_OWNER")
 db_name = getenv("DB_NAME")
-try: database = DB(api_key=db_api, db_owner=db_owner, db_name=db_name)
-except: 
-    print("Database is Not Set")
+try:
+    database = DB(api_key=db_api, db_owner=db_owner, db_name=db_name)
+except:
+    print("Database is not set")
     database = None
 
+# Force subscribe handler
+async def handle_force_sub(bot: Client, cmd: Message):
+    try:
+        user = await bot.get_chat_member(chat_id=channel_id, user_id=cmd.from_user.id)
+        if user.status in (ChatMemberStatus.BANNED, ChatMemberStatus.RESTRICTED):
+            await cmd.reply_text(
+                text="Sorry, You are Banned to use me. Contact my [Support Group](https://t.me/greymatters_bots_discussion).",
+                disable_web_page_preview=True,
+            )
+            return 0
+    except UserNotParticipant:
+        try:
+            await cmd.reply_text(
+                text="**Please Join My Updates Channel to use me!**\n\n"
+                     "Due to Overload, Only Channel Subscribers can use the Bot!",
+                reply_markup=InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton(
+                            "🤖 Join Updates Channel",
+                            url="t.me/bypassbot_update",
+                        )
+                    ],
+                ]),
+            )
+            return 0
+        except RPCError as e:
+            print(e.MESSAGE)
+    except FloodWait as ee:
+        await sleep(ee.value + 3)
+        await cmd.reply_text("Try later, flooded!")
+        return 0
+    except Exception:
+        await cmd.reply_text(
+            text="Something went Wrong! Contact my [Support Group](https://t.me/bypassbot_update)",
+            disable_web_page_preview=True,
+        )
+        return 0
+    return 1
 
-# handle index
+# Link verification
+async def verifylink(url: str) -> int:
+    return 1 if url and "//t.me/" not in url and url.startswith("https://") else 0
+
+# Handle index links
 def handleIndex(ele: str, message: Message, msg: Message):
     result = bypasser.scrapeIndex(ele)
     try:
         app.delete_messages(message.chat.id, msg.id)
     except:
         pass
-    if database and result: database.insert(ele, result)
+    if database and result:
+        database.insert(ele, result)
     for page in result:
         app.send_message(
             message.chat.id,
@@ -64,215 +102,76 @@ def handleIndex(ele: str, message: Message, msg: Message):
             disable_web_page_preview=True,
         )
 
-
-# loop thread
+# Bypassing logic
 def loopthread(message: Message, otherss=False):
-
     urls = []
-    if otherss:
-        texts = message.caption
-    else:
-        texts = message.text
-
-    if texts in [None, ""]:
+    texts = message.caption if otherss else message.text
+    if not texts:
         return
-    for ele in texts.split():
-        if "http://" in ele or "https://" in ele:
-            urls.append(ele)
-    if len(urls) == 0:
+    urls = [ele for ele in texts.split() if "http://" in ele or "https://" in ele]
+    if not urls:
         return
 
-    if bypasser.ispresent(bypasser.ddl.ddllist, urls[0]):
-        msg: Message = app.send_message(
-            message.chat.id, "⚡ __generating...__", reply_to_message_id=message.id
-        )
-    elif freewall.pass_paywall(urls[0], check=True):
-        msg: Message = app.send_message(
-            message.chat.id, "🕴️ __jumping the wall...__", reply_to_message_id=message.id
-        )
-    else:
-        if "https://olamovies" in urls[0] or "https://psa.wf/" in urls[0]:
-            msg: Message = app.send_message(
-                message.chat.id,
-                "⏳ __this might take some time...__",
-                reply_to_message_id=message.id,
-            )
-        else:
-            msg: Message = app.send_message(
-                message.chat.id, "🔎 __bypassing...__", reply_to_message_id=message.id
-            )
-
+    msg = app.send_message(message.chat.id, "🔎 __bypassing...__", reply_to_message_id=message.id)
     strt = time()
     links = ""
     temp = None
 
     for ele in urls:
-        if database: df_find = database.find(ele)
-        else: df_find = None
+        if database:
+            df_find = database.find(ele)
+        else:
+            df_find = None
         if df_find:
-            print("Found in DB")
             temp = df_find
-        elif search(r"https?:\/\/(?:[\w.-]+)?\.\w+\/\d+:", ele):
-            handleIndex(ele, message, msg)
-            return
-        elif bypasser.ispresent(bypasser.ddl.ddllist, ele):
-            try:
-                temp = bypasser.ddl.direct_link_generator(ele)
-            except Exception as e:
-                temp = "**Error**: " + str(e)
-        elif freewall.pass_paywall(ele, check=True):
-            freefile = freewall.pass_paywall(ele)
-            if freefile:
-                try:
-                    app.send_document(
-                        message.chat.id, freefile, reply_to_message_id=message.id
-                    )
-                    remove(freefile)
-                    app.delete_messages(message.chat.id, [msg.id])
-                    return
-                except:
-                    pass
-            else:
-                app.send_message(
-                    message.chat.id, "__Failed to Jump", reply_to_message_id=message.id
-                )
         else:
             try:
                 temp = bypasser.shortners(ele)
             except Exception as e:
                 temp = "**Error**: " + str(e)
-
-        print("bypassed:", temp)
-        if temp != None:
-            if (not df_find) and ("http://" in temp or "https://" in temp) and database:
-                print("Adding to DB")
+        if temp:
+            if not df_find and "http" in temp and database:
                 database.insert(ele, temp)
-            links = links + temp + "\n"
+            links += temp + "\n"
 
     end = time()
-    print("Took " + "{:.2f}".format(end - strt) + "sec")
+    app.edit_message_text(
+        message.chat.id, msg.id, f"__{links}__", disable_web_page_preview=True
+    )
 
-    if otherss:
-        try:
-            app.send_photo(
-                message.chat.id,
-                message.photo.file_id,
-                f"__{links}__",
-                reply_to_message_id=message.id,
-            )
-            app.delete_messages(message.chat.id, [msg.id])
-            return
-        except:
-            pass
-
-    try:
-        final = []
-        tmp = ""
-        for ele in links.split("\n"):
-            tmp += ele + "\n"
-            if len(tmp) > 4000:
-                final.append(tmp)
-                tmp = ""
-        final.append(tmp)
-        app.delete_messages(message.chat.id, msg.id)
-        tmsgid = message.id
-        for ele in final:
-            tmsg = app.send_message(
-                message.chat.id,
-                f"__{ele}__",
-                reply_to_message_id=tmsgid,
-                disable_web_page_preview=True,
-            )
-            tmsgid = tmsg.id
-    except Exception as e:
-        app.send_message(
-            message.chat.id,
-            f"__Failed to Bypass : {e}__",
-            reply_to_message_id=message.id,
-        )
-
-
-# start command
+# Bot commands
 @app.on_message(filters.command(["start"]))
-def send_start(
-    client: Client,
-    message: Message,
-):
-    app.send_message(
+async def send_start(client: Client, message: Message):
+    if not await handle_force_sub(client, message):
+        return
+    await app.send_message(
         message.chat.id,
-        f"__👋 Hi **{message.from_user.mention}**, i am Link Bypasser Bot, just send me any supported links and i will you get you results.\nCheckout /help to Read More__",
-        reply_markup=InlineKeyboardMarkup(
+        f"👋 Hi **{message.from_user.mention}**, I am a Link Bypasser Bot! Send me supported links to get results.\nCheckout /help for more info.",
+        reply_markup=InlineKeyboardMarkup([
             [
-                [
-                    InlineKeyboardButton(
-                        "🌐 Join Channel",
-                        url="https://t.me/bypassbot_update",
-                    )
-                ],
-            ]
-        ),
+                InlineKeyboardButton("🌐 Join Channel", url="https://t.me/bypassbot_update"),
+            ],
+        ]),
         reply_to_message_id=message.id,
     )
 
-
-# help command
 @app.on_message(filters.command(["help"]))
-def send_help(
-    client: Client,
-    message: Message,
-):
-    app.send_message(
+async def send_help(client: Client, message: Message):
+    if not await handle_force_sub(client, message):
+        return
+    await app.send_message(
         message.chat.id,
-        HELP_TEXT,
+        "I can bypass links for supported services. Just send me a link!",
         reply_to_message_id=message.id,
         disable_web_page_preview=True,
     )
 
-
-# links
 @app.on_message(filters.text)
-def receive(
-    client: Client,
-    message: Message,
-):
-    bypass = Thread(target=lambda: loopthread(message), daemon=True)
-    bypass.start()
+async def receive(client: Client, message: Message):
+    if not await handle_force_sub(client, message):
+        return
+    Thread(target=lambda: loopthread(message), daemon=True).start()
 
-
-# doc thread
-def docthread(message: Message):
-    msg: Message = app.send_message(
-        message.chat.id, "🔎 __bypassing...__", reply_to_message_id=message.id
-    )
-    print("sent DLC file")
-    file = app.download_media(message)
-    dlccont = open(file, "r").read()
-    links = bypasser.getlinks(dlccont)
-    app.edit_message_text(
-        message.chat.id, msg.id, f"__{links}__", disable_web_page_preview=True
-    )
-    remove(file)
-
-
-# files
-@app.on_message([filters.document, filters.photo, filters.video])
-def docfile(
-    client: Client,
-    message: Message,
-):
-
-    try:
-        if message.document.file_name.endswith("dlc"):
-            bypass = Thread(target=lambda: docthread(message), daemon=True)
-            bypass.start()
-            return
-    except:
-        pass
-
-    bypass = Thread(target=lambda: loopthread(message, True), daemon=True)
-    bypass.start()
-
-
-# server loop
-print("Bot Starting")
+# Run the bot
+print("Bot Starting...")
 app.run()
